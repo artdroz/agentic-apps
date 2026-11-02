@@ -249,6 +249,11 @@ disable/re-enable as a migration: it rotates the task key and resets activation.
 Already-running reviews retain their original prompt and require separate
 inspection before declaring the rollout complete.
 
+See [the staged rollout and rollback runbook](./REVIEW-POLICY-ROLLOUT.md) for the
+exact saved fields, canary acceptance, runtime refresh checks and production
+approval gate. Production rollout is on hold; this PR alone does not authorize
+live configuration changes.
+
 `sdlc_review_bindings` lives only in the app database. Task
 secrets are AES-256-GCM encrypted, bound to the immutable connection key, using an
 HKDF-derived key from the server-managed webhook secret. Raw task keys never
