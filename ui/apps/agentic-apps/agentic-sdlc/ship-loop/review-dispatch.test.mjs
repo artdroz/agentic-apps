@@ -1,13 +1,30 @@
 import assert from "node:assert/strict";
-import { randomUUID, createHmac } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
+import { createHmac } from "node:crypto";
+import { registerHooks } from "node:module";
 import test from "node:test";
+import { resetFixture, setFixture } from "./fixtures/review-dispatch.mjs";
+import { eligibleReviewEvent, reviewTriggerFilter } from "./src/lib/agentic-sdlc/review-eligibility.ts";
 
-const source = (name) => readFileSync(new URL(`./src/lib/agentic-sdlc/${name}.ts`, import.meta.url), "utf8");
-const moduleUrl = (code) => `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
-const eligibilityUrl = moduleUrl(stripTypeScriptTypes(source("review-eligibility")));
-const { eligibleReviewEvent, reviewTriggerFilter } = await import(eligibilityUrl);
+const dispatcherUrl = new URL("./src/lib/agentic-sdlc/review-dispatch.ts", import.meta.url).href;
+const fixtureUrl = new URL("./fixtures/review-dispatch.mjs", import.meta.url).href;
+const eligibilityUrl = new URL("./src/lib/agentic-sdlc/review-eligibility.ts", import.meta.url).href;
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (context.parentURL === dispatcherUrl) {
+      if (specifier === "./review-eligibility")
+        return { url: eligibilityUrl, shortCircuit: true };
+      if (["./mongo-collections", "./platform-client", "./review-bindings"].includes(specifier))
+        return { url: fixtureUrl, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+let reviewDispatcher;
+try {
+  reviewDispatcher = await import("./src/lib/agentic-sdlc/review-dispatch.ts");
+} finally {
+  hooks.deregister();
+}
 const head = "a".repeat(40);
 const payload = (draft = false) => ({
   action: "synchronize",
@@ -89,16 +106,8 @@ async function dispatchFixture(t, changes = {}) {
     }),
     openReviewSecret: () => "fixture-signing-secret",
   };
-  const key = `reviewDispatchFixture-${randomUUID()}`;
-  globalThis[key] = mocks;
-  t.after(() => { delete globalThis[key]; });
-  const mocksUrl = moduleUrl(Object.keys(mocks).map((name) =>
-    `export const ${name} = (...args) => globalThis[${JSON.stringify(key)}].${name}(...args);`
-  ).join("\n"));
-  const code = stripTypeScriptTypes(source("review-dispatch"))
-    .replace(/from "\.\/review-eligibility"/g, `from ${JSON.stringify(eligibilityUrl)}`)
-    .replace(/from "\.\/(?:mongo-collections|platform-client|review-bindings)"/g, `from ${JSON.stringify(mocksUrl)}`);
-  const module = await import(moduleUrl(code));
+  setFixture(mocks);
+  t.after(resetFixture);
   const oldOrigin = process.env.AGENTIC_SDLC_AUTONOMOUS_ORIGIN;
   process.env.AGENTIC_SDLC_AUTONOMOUS_ORIGIN = "https://autonomous.example.test";
   t.after(() => {
@@ -110,7 +119,7 @@ async function dispatchFixture(t, changes = {}) {
     requests.push(args);
     return new Response(null, { status: 202 });
   });
-  return { module, row, binding, eventUpdates, bindingUpdates, requests, bindingReads: () => bindingReads };
+  return { module: reviewDispatcher, row, binding, eventUpdates, bindingUpdates, requests, bindingReads: () => bindingReads };
 }
 
 test("a new draft delivery is rejected before looking up its enabled binding", async (t) => {
